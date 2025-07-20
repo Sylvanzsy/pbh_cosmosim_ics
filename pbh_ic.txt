@@ -1,0 +1,14 @@
+#!/bin/bash
+
+#SBATCH -J pbh_ic        # job name
+#SBATCH -o OUT.o%j       # output and error file name (%j expands to jobID)
+#SBATCH -N 1              # total number of nodes requested  
+#SBATCH -n 1              # total number of mpi tasks requested
+#SBATCH -p normal    # queue (partition) -- normal, development, etc.
+#SBATCH -t 24:00:00        # run time (hh:mm:ss) 
+#SBATCH --mail-user=szhangphys@utexas.edu
+#SBATCH --mail-type=begin  # email me when the job starts
+#SBATCH --mail-type=end    # email me when the job finishes
+#SBATCH -A AST23026  # Allocation name to charge job against
+
+./pbh_ic.exe    
