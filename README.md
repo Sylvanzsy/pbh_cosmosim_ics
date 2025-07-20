@@ -176,7 +176,7 @@ archivePrefix = {arXiv},
        adsurl = {https://ui.adsabs.harvard.edu/abs/2024ApJ...975..139Z},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
-'''
+```
 
 
 
