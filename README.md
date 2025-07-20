@@ -53,7 +53,7 @@ $$
 #### Linear velocity perturbation
 
 $$
-\dot{\psi}_{l}(r, a) = \frac{0.6 GM_{\mathrm{PBH}}t_0}{a_{\mathrm{eq}}^{3/2}r^2}\left[\left(\frac{a_{\mathrm{eq}}}{a}\right)^{1/2} - \left(\frac{a_{\mathrm{eq}}}{a}\right)^3\right]\frac{a f_{\mathrm{scale}}}{10^5 \mathrm{km/s}}
+\dot{\psi_{l}}(r, a) = \frac{0.6 GM_{\mathrm{PBH}}t_0}{a_{\mathrm{eq}}^{3/2}r^2}\left[\left(\frac{a_{\mathrm{eq}}}{a}\right)^{1/2} - \left(\frac{a_{\mathrm{eq}}}{a}\right)^3\right]\frac{a f_{\mathrm{scale}}}{10^5 \mathrm{km/s}}
 $$
 
 ### Non-linear Turnaround Radius
