@@ -22,7 +22,6 @@ The following preprocessor flags control code functionality:
 * `CENTER_PBH`: Places a single PBH at the simulation box center.
 * `ALLPBH`: Perturbs particles using all PBHs rather than nearest ones only.
 * `PERIOD`: Uses periodic boundary conditions for calculating distances.
-* `SELFS`: Adjusts the growth factor for halo mass corrections (recommended for matter-dominated regimes).
 * `NONLINEAR`: Introduces initial nonlinear structures around PBHs.
 * `PERTURB_PBH`: Enables self-perturbations among PBHs.
 * `NO_GAS_PERTURB`: Disables perturbations to gas particles.

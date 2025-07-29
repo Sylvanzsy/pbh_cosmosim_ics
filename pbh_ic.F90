@@ -11,7 +11,6 @@
 #define CENTER_PBH ! place one single PBH in the center of the box
 !#define ALLPBH
 #define PERIOD
-!#define SELFS ! change of growth factor to make correction on halo mass, recommended for the matter-dominated regime!
 !#define NONLINEAR ! initial nonlinear structures around PBHs
 !#define PERTURB_PBH ! perturbations on PBHs by themselves
 #define NO_GAS_PERTURB ! no perturbations to gas particles
@@ -633,8 +632,8 @@ endif ! if (Ngen .gt. 0)
 #ifdef NO_GAS_PERTURB
   outname = trim(outname) // '_ngasptb'
 #endif
-#ifndef SELFS
-  outname = trim(outname) // '_nself'
+! #ifndef SELFS
+! outname = trim(outname) // '_nself'
 #endif
 #ifndef NONLINEAR
   outname = trim(outname) // '_nlinptb'
@@ -785,17 +784,17 @@ end function poisson
     real, intent(in) :: fc, a_
     real*8, intent(in) :: s
     real :: Dgrow
-#ifdef SELFS
-    if (s .gt. 1) then
-      !Dgrow = s*6.0*log(0.5+0.5**0.5)
-      Dgrow = s*3.0/(4*PI)/1.3
-    else
-      Dgrow = 6*log(0.5+0.5*(1+s)**0.5) !(1.0+1.5*fc/a_*s)**a_ - 1.0
+!#ifdef SELFS ! No longer in use since we have used Jiao's formulism
+!    if (s .gt. 1) then
+!      !Dgrow = s*6.0*log(0.5+0.5**0.5)
+!      Dgrow = s*3.0/(4*PI)/1.3
+!    else
+!      Dgrow = 6*log(0.5+0.5*(1+s)**0.5) !(1.0+1.5*fc/a_*s)**a_ - 1.0
       !Dgrow = s*3.0/(4*PI)
-    endif
-#else
+!    endif
+!#else
     Dgrow = (1.0+1.5*fc/a_*s)**a_ - 1.0
-#endif
+!#endif
   end function
 
   pure function p1dotp2(p1, p2)
