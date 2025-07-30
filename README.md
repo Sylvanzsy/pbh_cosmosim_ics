@@ -1,4 +1,4 @@
-# PHANTOM: Primordial Black Holes And Nonlinear perTurbations fOr siMulations
+# PHANTOM: Primordial black Holes And Nonlinear perTurbations fOr siMulations
 
 This document describes the Fortran code `pbh_ic`, designed to insert Primordial Black Holes (PBHs) into cosmological initial conditions (ICs) formatted for Gadget simulations. The code supports various customizable options to modify particle distributions, perturbations, and streaming velocities relevant for cosmological simulations.
 
