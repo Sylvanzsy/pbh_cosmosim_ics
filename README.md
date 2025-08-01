@@ -36,6 +36,7 @@ The code defines several physical and numerical parameters crucial for PBH inser
 * `sigma_rms`: Root mean square streaming velocity at recombination (default 0.8).
 * `z_rec`: Redshift of recombination (default 1100).
 * `a`: Scale factor corresponding to the IC redshift.
+* `f_scale`: Scaling factor applied to gravitational perturbations, adjusting the strength of displacement and velocity perturbations induced by PBHs.
 
 ## Physics and Cosmology
 
