@@ -634,7 +634,7 @@ endif ! if (Ngen .gt. 0)
 #endif
 ! #ifndef SELFS
 ! outname = trim(outname) // '_nself'
-#endif
+! #endif
 #ifndef NONLINEAR
   outname = trim(outname) // '_nlinptb'
 #endif
