@@ -1,4 +1,4 @@
-# PBH Initial Conditions Generator for Gadget Simulations
+# PHANTOM: Primordial black Holes And Nonlinear perTurbations fOr siMulations
 
 This document describes the Fortran code `pbh_ic`, designed to insert Primordial Black Holes (PBHs) into cosmological initial conditions (ICs) formatted for Gadget simulations. The code supports various customizable options to modify particle distributions, perturbations, and streaming velocities relevant for cosmological simulations.
 
@@ -36,6 +36,7 @@ The code defines several physical and numerical parameters crucial for PBH inser
 * `sigma_rms`: Root mean square streaming velocity at recombination (default 0.8).
 * `z_rec`: Redshift of recombination (default 1100).
 * `a`: Scale factor corresponding to the IC redshift.
+* `f_scale`: A fudge factor  applied to gravitational perturbations, adjusting the strength of displacement and velocity perturbations induced by PBHs, governing the long-term growth of PBH-seeded halos. We use $f_{\mathrm{scale}} = 4.4$ by default to reproduce the results from the spherical collapse theory $M_{\mathrm{halo}} = m_{\mathrm{PBH}} a/a_{\mathrm{eq}}$ ([Mack et al. (2007)](https://ui.adsabs.harvard.edu/abs/2007ApJ...665.1277M)).
 
 ## Physics and Cosmology
 
