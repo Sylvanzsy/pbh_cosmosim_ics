@@ -12,7 +12,35 @@ module kdtree
   
   integer kd_dim, task_size, MINDIV
   real x1, x2, y1, y2, z1, z2, ext
-  parameter(kd_dim=3, task_size=50, MINDIV = 20)
+! task_size: depth of the fixed-size LIFO task stacks used by kd_init
+! (taskp/taskdim) and by kd_nnearest (task).
+!
+! Both stacks are plain depth-first traversals of the tree: every iteration
+! pops one entry and pushes at most two (the two children of the popped box).
+! The entries sitting below the top of such a stack are exactly the
+! not-yet-visited siblings of the boxes on the current root-to-node path, so
+! there is at most ONE pending entry per tree level, plus the pair currently on
+! top.  Hence
+!     max stack occupancy <= h + 1,   h = maximum tree depth.
+!
+! The split is by point INDEX, not by coordinate value: the left child gets
+! ii = (np+1)/2 = ceil(np/2) points and the right child np-ii = floor(np/2).
+! A box is therefore at most ceil(N/2**d) points deep at level d, independent
+! of how degenerate the point distribution is (duplicate coordinates included),
+! and a box is only split while its point count exceeds MINDIV.  So
+!     h <= floor(log2(N/MINDIV)) + 1
+! and the requirement is
+!     task_size >= floor(log2(N/MINDIV)) + 2.
+!
+! With MINDIV=20 that is 25 for N=512**3 (=1.3e8) and 28 for N=2048**3 (=8.6e9).
+! task_size=128 leaves a factor ~2**100 of headroom in N, and costs only
+! 2*128*4 = 1 kB of stack in kd_init and 128*4 = 512 B per kd_nnearest call.
+!
+! NOTE: the previous value (50) was in fact only ever exercised up to depth 1,
+! because kd_init never pushed the second child back onto the stack (see the
+! bug fix in kd_init below).  It is raised here together with that fix so that
+! the now genuinely recursive traversal has a derived, not incidental, bound.
+  parameter(kd_dim=3, task_size=128, MINDIV = 20)
   parameter(x1=0, x2=1e6, y1=0, y2=1e6, z1=0, z2=1e6, ext=2)
 
 !kd_root: Represents the root of the k-d tree. It contains pointers to the index array, node array, and point array.
@@ -124,11 +152,40 @@ contains
       root%lbox(jbox-1)%pind = tp
       root%lbox(jbox)%pind = tp
       
+! BUG FIX: schedule BOTH children for further splitting.
+! The original code only tested the first child (jbox-1) and never pushed the
+! second child (jbox) back onto the task stack, no matter how many points it
+! held.  Because every iteration then popped one task and pushed at most one,
+! the stack depth stayed <= 1 and the tree "built" without any error: the split
+! chain only ever followed the left child, so the tree degenerated into a
+! caterpillar of ~log2(N/MINDIV) internal nodes whose right children are
+! unsplit leaves.  The very first right child alone keeps floor(N/2) points -
+! i.e. half the particles end up in one giant leaf.
+! Consequences that grow with N:
+!   * kd_nnearest has to scan that O(N) leaf whenever a query lands in it (or
+!     whenever it cannot be pruned), so a query costs O(N) instead of
+!     O(log N) and the whole PBH loop becomes O(N^2);
+!   * the leaf that kd_locate returns is huge, so the dn(1) bound used for
+!     pruning and every subsequent bound are computed over a wildly
+!     unrepresentative point set - the search degrades instead of degrading
+!     gracefully;
+!   * the box geometry stored for that leaf covers half the simulation volume,
+!     which makes the dist_box pruning test meaningless there.
+! Pushing the second child restores the intended balanced median tree
+! (all leaves between MINDIV/2 and MINDIV points, depth ~log2(N/MINDIV)).
+! See the task_size derivation above: with both children pushed the stack is a
+! real DFS stack and needs log2(N/MINDIV)+2 slots, which is why task_size was
+! raised from 50 to 128 at the same time.
       if (ii .gt. MINDIV) then
         task = task + 1
         taskp(task) = jbox-1
         taskdim(task) = mod(tdim+1, kd_dim)
       endif   
+      if (np-ii .gt. MINDIV) then
+        task = task + 1
+        taskp(task) = jbox
+        taskdim(task) = mod(tdim+1, kd_dim)
+      endif
     enddo    
   end subroutine kd_init
 
@@ -226,23 +283,33 @@ contains
       p1(n) = box%p1(n)
       p2(n) = box%p2(n)
 #ifdef PERIOD
-      r2 = p(n) - box%p1(n)
-      if (r2 .gt. bs*0.5) then
-        p1(n) = box%p1(n)+bs
-      endif
-      if (r2 .lt. -0.5*bs) then
-        p1(n) = box%p1(n)-bs
-      endif
-      r2 = p(n) - box%p2(n)
-      if (r2 .gt. bs*0.5) then
-        p2(n) = box%p2(n)+bs
-      endif
-      if (r2 .lt. -0.5*bs) then
-        p2(n) = box%p2(n)-bs
-      endif
-#endif
+! BUG FIX: wrap the box as a WHOLE, not its two edges independently.
+! The previous version applied the minimum-image shift separately to p1(n) and
+! to p2(n).  That is only self-consistent while the box is narrower than bs/2;
+! for a wider box the two edges get shifted by different amounts and the
+! interval collapses.  The root box is the extreme case: with p1=0, p2=bs and
+! a query at p=0.9*bs one gets p-p1 = 0.9*bs > bs/2, so p1 -> bs, while
+! p-p2 = -0.1*bs does not trigger the p2 shift, leaving p1 = p2 = bs.  The
+! "box" is then a single point and dist_box returns 0.1*bs instead of 0.
+! Since kd_nnearest prunes a subtree as soon as dist_box >= dn(1), the ROOT box
+! itself was pruned for essentially every query: the traversal never descended
+! and the search silently degenerated into "return the nearest point inside the
+! leaf that kd_locate happened to land in".  Measured on 32**3 random points,
+! 33% of the returned neighbours were not the true nearest neighbour.
+! This was previously masked by the kd_init imbalance bug: that leaf used to
+! hold N/2 points, so the wrong answer was usually right by accident.  With a
+! correctly balanced tree the leaf holds ~MINDIV points and the error shows.
+! Correct version: take the minimum image of the vector from the box CENTRE to
+! the point, then subtract the box half-width.  This stays valid for boxes of
+! any width (a box at least bs wide correctly yields distance 0).
+      r2 = p(n) - 0.5*(box%p1(n)+box%p2(n))
+      r2 = r2 - bs*nint(r2/bs)
+      r2 = abs(r2) - 0.5*(box%p2(n)-box%p1(n))
+      if (r2 .gt. 0.0) dd = dd + r2*r2
+#else
       if (p(n) .lt. p1(n)) dd = dd + (p(n)-p1(n)) * (p(n)-p1(n))
       if (p(n) .gt. p2(n)) dd = dd + (p(n)-p2(n)) * (p(n)-p2(n))
+#endif
   enddo
   dist_box = sqrt(dd)
   end function dist_box

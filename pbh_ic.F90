@@ -1,20 +1,29 @@
 ! Add PBHs to a Gadget format 0 IC file
 #define DEBUG
-!#define OUTPBH ! write an output file for the initial position/velocity of PBHs
-!#define PERTURB
-#define STREAMING ! add a baryon-DM relative streaming velocity
+!#define OUTPBH
+#define PERTURB
+!#define STREAMING ! not relevant for this
 !#define FLIPID
 #define PBH
-!#define DAMPING
-!#define VELOCITY
-!#define TRUNCATE
-#define CENTER_PBH ! place one single PBH in the center of the box
-!#define ALLPBH
+#define DAMPING
+#define VELOCITY
+#define TRUNCATE
+!#define CENTER_PBH
+#define ALLPBH
 #define PERIOD
+! change SELFS
+! change NONLINEAR
+! undefine both -> strong perturbation
+!#define SELFS ! recommended for the matter-dominated regime!
 !#define NONLINEAR ! initial nonlinear structures around PBHs
 !#define PERTURB_PBH ! perturbations on PBHs by themselves
-#define NO_GAS_PERTURB ! no perturbations to gas particles
-!#define noPBH ! handle to not include PBH generated but only include perturbation induced by PBHs in IC
+!#define MASSFUNC_LOGNORMAL
+! Extended (log-normal) PBH mass function instead of a monochromatic one.
+! When undefined the code is bit-for-bit identical to the monochromatic version.
+! Parameterisation (see Mc_pbh / sigma_ln below):
+!   ln M ~ Normal(ln Mc_pbh, sigma_ln**2),  <M> = Mc_pbh*exp(sigma_ln**2/2)
+! <M> replaces mpbh in the PBH number normalisation; fpbh keeps its meaning as
+! the mass fraction of dark matter in PBHs.
 
 program pbh_ic
 
@@ -23,26 +32,16 @@ program pbh_ic
 
    implicit none
 
-
-   character*200, parameter :: path='../ics_SIDM_cdm/' 
-   !character*200, parameter :: icbase='ics_N512L1'
-   !character*200, parameter :: icbase='ics_N256L1'
+   character*200, parameter :: path='./'
    !character*200, parameter :: icbase='ics_N128L014_nu2_zoom_lowres'
    !character*200, parameter :: icbase='ics_N128L014_zoom_lowres'
-   !character*200, parameter :: icbase='ics_N512L060'
-   !character*200, parameter :: icbase='ics_N512L060_z1000'
-   !character*200, parameter :: icbase='ics_N1024L060_z1000'
-   !character*200, parameter :: icbase='ics_N256L025'
-   character*200, parameter :: icbase='ics_N256L025_z1100'
-   !character*200, parameter :: icbase='ics_N256L1_z1100'
-   !character*200, parameter :: icbase='ics_N256L1_z1100_sstr'
-   !character*200, parameter :: icbase='ics_N256L1_z1100_str'
-   !character*200, parameter :: icbase='ics_N256L1_z3400'
-   !character*200, parameter :: icbase='ics_N1024L060_dmo'
-   !character*200, parameter :: icbase='ics_N128L2'
+   !character*200, parameter :: icbase='ics_N128L1'
    !character*200, parameter :: icbase='ics_N256L10'
+   character*200, parameter :: icbase='ics_N32L025_nu3'
    !character*200, parameter :: icbase='ics_N32L025_nu3_dmo_z1e6'
    !character*200, parameter :: icbase='ics_N32L5_dmo'
+   !character*200, parameter :: icbase='ics_N32L5_dmo'
+
    character*200 filename, outname
 
    integer*4 npart(0:5), nall(0:5)
@@ -60,6 +59,14 @@ program pbh_ic
    integer*4,allocatable :: id1(:)
 
    real*4,allocatable    :: phaseDM(:,:), lpbh(:,:), ldpbh(:,:) !, lpbh0(:,:)
+#ifdef MASSFUNC_LOGNORMAL
+   ! 2-3: per-PBH mass in PHYSICAL Msun, allocated/filled in lockstep with lpbh.
+   ! Slots beyond Ngen (the "parked at 10*bs" padding) are left at 0.0, which
+   ! is a neutral placeholder: it contributes nothing to any force sum.
+   real*4,allocatable    :: mpbh_list(:)
+   real*8 :: mm_avg, mm_std, lnm_avg, lnm_std
+   integer*4 :: Nm_hres
+#endif
    real*4 :: p_dummy(6), dx(3), fac, dx_pert, rpert, fac_pert, disp(3), bs, esft, rpert0
 #ifdef VELOCITY
    real*4 :: dv_pert
@@ -69,29 +76,42 @@ program pbh_ic
    integer*4, allocatable :: nnindex(:) !, n_dummy
    real*4, allocatable :: nndis(:), dmgrid(:,:,:)
    real*4 :: dismax, vol, re(3), le(3), rvec(3), xdis(3), ftrunc, H0, mref, dpertmax
-   real*4 :: dummy, facavg0, facavg1, fshrink, d_dummy, vdis(3)
+   real*4 :: dummy, facavg0, facavg1, fshrink, d_dummy
    real*4 :: delta, fscale, fscalev!, rnearest, dnearest(3)
    type(rng) :: rng_obj
    
    real*4 :: msun, kpc, gra, PI
    parameter(msun=1.989e33, kpc=3.085678e21, gra=6.672e-8, PI=3.1415926536)
    
-   real*8 :: mpbh, sigma_rms, z_rec, fstream, fpbh_, d_nl!, a_target
+   real*8 :: mpbh, sigma_rms, z_rec, fstream!, a_target
+   real*8 :: mpbh_mean   ! <M>; equals mpbh in the monochromatic case
+#ifdef MASSFUNC_LOGNORMAL
+   ! 2-2: log-normal mass function parameters.
+   !   Mc_pbh   median mass [Msun]
+   !   sigma_ln standard deviation of ln M
+   ! Mc_pbh=1e3, sigma_ln=1.0 puts 95% of the PBHs (+-2 sigma) in
+   !   1e3*exp(-2) .. 1e3*exp(+2) = 135 .. 7389 Msun,
+   ! and gives <M> = 1e3*exp(1.0**2/2) = 1648.7 Msun.
+   real*8 :: Mc_pbh, sigma_ln
+   parameter(Mc_pbh=1.0d3, sigma_ln=1.0d0)
+#endif
    real*4 :: fpbh, Npbh, Or0, aeq, vrel(3), fc, Ob0, a_, gfac, gfac_gas, vfac!, facv
-   parameter(sigma_rms=30.0, z_rec=1100.0, fstream=0.4)!, a_target=1.0/31.0)
-   !parameter(nnn=1, pbh_type=5, mpbh=5e10, fpbh=5e-4)
-   !parameter(nnn=1, pbh_type=3, mpbh=1e6, fpbh=1e-3)
-   parameter(nnn=3000, pbh_type=3, mpbh=1e6, fpbh=1.0)
-   !parameter(nnn=1, pbh_type=3, mpbh=1e10, fpbh=1e-3)
+   parameter(sigma_rms=30.0, z_rec=1100.0, fstream=0.8)!, a_target=1.0/31.0)
+   !parameter(nnn=1, pbh_type=5, mpbh=1e10, fpbh=1e-4)
+   parameter(nnn=1, pbh_type=3, mpbh=1e6, fpbh=1e-3)
+   !parameter(nnn=1, pbh_type=3, mpbh=1e6, fpbh=1e-2)
+   !parameter(nnn=1, pbh_type=3, mpbh=1e9, fpbh=1e-2)
+   
+
    logical :: zoomin
    parameter(zoomin=.false., rand_seed=2333, n_refine=1) !use rand_seed=2333 for 10 PBH with fpbh=1e-3, mpbh=1e10 in a 10 Mpc/h box
    parameter(esft=1.0/30.0, Or0=9.117e-5, Ob0=0.04864)
    parameter(ftrunc=1.0, fac_pert=100.0, rpert0=0)!300)
-   parameter(delta=18.0*PI**2, fscalev=1.0)
+   parameter(delta=18.0*PI**2, fscale=1.0, fscalev=1.0)
    !parameter(delta=18.0*PI**2, fscale=0.16260587661983628, fscalev=1.0)
    !parameter(delta=18.0*PI**2, fscale=1, fscalev=0.16260587661983628)!0.21138763960578716)
    
-   npert=64 !1
+   npert=1
    
    allocate(nnindex(max(nnn,npert)))
    allocate(nndis(max(nnn,npert)))
@@ -110,6 +130,16 @@ program pbh_ic
         endif
         print *,'Type=',i,' Particles=', nall(i), 'mass=', massarr(i)
      end do
+#ifdef MASSFUNC_LOGNORMAL
+     ! 2-5: number of entries the ORIGINAL lmass block contributes for types
+     ! 0/1.  The PBHs are inserted into pos1/vel1/id1 right after the type 0/1
+     ! particles, so in the variable-mass block their masses must go right
+     ! after these Nm_hres entries and before those of types >= 2.
+     Nm_hres = 0
+     do i=0,1
+        if (massarr(i) .eq. 0) Nm_hres = Nm_hres + nall(i)
+     end do
+#endif
      Ngas = nall(0)
      Ndm = nall(1)
      Nhres = Ngas+Ndm
@@ -189,10 +219,17 @@ program pbh_ic
   write(0,*) 'Grid spacing = ', dismax
   write(0,*) 'Target region extent: le=', le,'re=', re
   
+  ! 2-2: the PBH number is set by the total PBH mass budget fpbh*M_dm divided
+  ! by the MEAN PBH mass.  For a monochromatic function that is mpbh itself.
+#ifdef MASSFUNC_LOGNORMAL
+  mpbh_mean = Mc_pbh*exp(0.5d0*sigma_ln**2)
+#else
+  mpbh_mean = mpbh
+#endif
   if (Ngas .gt. 0) then
-    Npbh = float(Ndm) * massarr(1)*1e10*fpbh/h/mpbh
+    Npbh = float(Ndm) * massarr(1)*1e10*fpbh/h/mpbh_mean
   else
-    Npbh = float(Ndm) * massarr(1)*1e10*fpbh/h/mpbh * (Om0-Ob0)/Om0
+    Npbh = float(Ndm) * massarr(1)*1e10*fpbh/h/mpbh_mean * (Om0-Ob0)/Om0
   endif
   if (rpert0 .gt. 0) then
     rpert = rpert0
@@ -205,22 +242,17 @@ program pbh_ic
   fc = (Om0-Ob0)/Om0
   a_ = 0.25*(sqrt(1+24*fc)-1)
   fshrink = 1-(delta)**(-1.0/3.0)
-  !fscale = 1.0 !2.0/Om0
-  fscale = 4.4
   
   gfac = Dgrow(a/aeq, fc, a_) * fscale
-#ifdef NO_GAS_PERTURB
-  gfac_gas = 0.0
-#else  
   gfac_gas = Dgrow(a*(1+z_rec), fc, a_) * fscale
-#endif
-  vfac = 1.0 !Dgrowv(a, aeq, fc, a_) * fscalev
+  vfac = Dgrowv(a, aeq, fc, a_) * fscalev
   
 !#ifdef IHALO
-  dummy = (8*PI/3.0*gra*mpbh*msun * gfac/(Om0*H0**2))**(1.0/3.0) * h/kpc
-  d_nl = q_nl(mpbh, a, fscale)
+  ! diagnostic only; uses the mean PBH mass so that it stays meaningful for an
+  ! extended mass function (mpbh_mean == mpbh in the monochromatic case)
+  dummy = (8*PI/3.0*gra*mpbh_mean*msun * gfac/(Om0*H0**2))**(1.0/3.0) * h/kpc
 !  dpertmax = dummy !*(4*PI/3.0)*(Dgrow(a/aeq, fc, a_)/Dgrow(a_target/aeq, fc, a_))**(2.0/3.0)
-  write(0,*) 'Nonlinear scale = ', dummy, dummy/dismax, ' (old)', d_nl, d_nl/dismax, ' (new)'!, dummy
+  write(0,*) 'Nonlinear scale = ', dummy, dummy/dismax, gfac!, dummy
 !  dpertmax = max(dpertmax, dismax)
 !#else
   dpertmax = dismax
@@ -235,19 +267,15 @@ program pbh_ic
   Ncell = 1
   write(0,*) 'Add one PBH at the center'
   allocate(lpbh(1:6,2*Ncell))
+#ifdef MASSFUNC_LOGNORMAL
+  allocate(mpbh_list(2*Ncell))
+  mpbh_list = 0.0                       ! neutral placeholder for unused slots
+  mpbh_list(1) = Mc_pbh*exp(sigma_ln*gauss_bm(rng_obj))
+#endif
   do i=1,3
     lpbh(i,1) = 0.5*(re(i)+le(i))
   enddo
-
-
-  ! Add random perturbation to the PBH position
-  !call rng_obj%init(rand_seed)
-  !do i=1,3
-    ! The perturbation magnitude should be smaller than the average particle separation (dismax)
-  !  lpbh(i,1) = lpbh(i,1) + (2.0*rng_obj%get_ran() - 1.0) * 0.2 * dismax
-  !enddo
   call kd_nnearest(kdroot, lpbh(1:3,1), nnn, nnindex, nndis, i_dummy)
-
   p_dummy = 0.0
   do l=1,nnn
     p_dummy(4:6) = p_dummy(4:6) + phaseDM(4:6,nnindex(l))
@@ -276,6 +304,10 @@ program pbh_ic
   ! sample PBHs
   write(0,*) 'Adding PBHs...'
   allocate(lpbh(1:6,2*Ncell))
+#ifdef MASSFUNC_LOGNORMAL
+  allocate(mpbh_list(2*Ncell))
+  mpbh_list = 0.0                       ! neutral placeholder for unused slots
+#endif
   do i=1,nx
     do j=1,nx
       do k=1,nx
@@ -293,6 +325,13 @@ program pbh_ic
           enddo
           p_dummy(4:6) = p_dummy(4:6)/float(nnn)
           lpbh(4:6,Ngen+ipbh) = p_dummy(4:6) !phaseDM(4:6,nnindex(1))
+#ifdef MASSFUNC_LOGNORMAL
+          ! 2-3: independent mass draw for this PBH, M = Mc*exp(sigma*z)
+          ! with z a standard normal from the Box-Muller transform.
+          ! NOTE: the spatial sampling above is untouched; mass and position
+          ! are drawn independently of each other.
+          mpbh_list(Ngen+ipbh) = Mc_pbh*exp(sigma_ln*gauss_bm(rng_obj))
+#endif
         enddo
         Ngen = Ngen + Nthis
         !else
@@ -303,7 +342,23 @@ program pbh_ic
   enddo
 #endif
   write(0,*) 'Num. of generated PBH(s): ',Ngen, ', ratio: ',float(Ngen)/Npbh
-  fpbh_ = fpbh * float(Ngen)/Npbh
+#ifdef MASSFUNC_LOGNORMAL
+  ! 2-6: statistics of the sampled mass function
+  if (Ngen .gt. 0) then
+    mm_avg  = sum(real(mpbh_list(1:Ngen),8))/dble(Ngen)
+    mm_std  = sqrt(sum((real(mpbh_list(1:Ngen),8)-mm_avg)**2)/dble(Ngen))
+    lnm_avg = sum(log(real(mpbh_list(1:Ngen),8)))/dble(Ngen)
+    lnm_std = sqrt(sum((log(real(mpbh_list(1:Ngen),8))-lnm_avg)**2)/dble(Ngen))
+    write(0,*) 'PBH mass function: LOG-NORMAL, Mc=',Mc_pbh,' Msun, sigma=',sigma_ln
+    write(0,*) '  mean   M  =',mm_avg,' Msun   (target <M> =',mpbh_mean,')'
+    write(0,*) '  std    M  =',mm_std,' Msun   (target      =', &
+      & mpbh_mean*sqrt(exp(sigma_ln**2)-1.0d0),')'
+    write(0,*) '  min/max M =',minval(mpbh_list(1:Ngen)),maxval(mpbh_list(1:Ngen)),' Msun'
+    write(0,*) '  mean ln M =',lnm_avg,'        (target ln Mc =',log(Mc_pbh),')'
+    write(0,*) '  std  ln M =',lnm_std,'        (target sigma =',sigma_ln,')'
+    write(0,*) '  total PBH mass =',sum(real(mpbh_list(1:Ngen),8)),' Msun'
+  endif
+#endif
     
   allocate(ldpbh(1:6,Ngen))
     
@@ -331,17 +386,32 @@ program pbh_ic
   endif
 #endif
 
+#ifdef PERTURB
 ! set the positions of the remaining elements of the PBH list to far away from
 ! the simulation box, so that they will not be included in perturbations
-#ifdef PERTURB
-  do i=Ngen+1,2*Ncell 
-    lpbh(1:3,i) = (/10*bs,10*bs,10*bs/)
-  enddo
-  do i=1,2*Ncell
-    idpbh(i) = -1
-  enddo
-  write(0,*) 'Perturbing particles within', rpert
-    dx_pert = 0.0
+do i=Ngen+1,2*Ncell 
+  lpbh(1:3,i) = (/10*bs,10*bs,10*bs/)
+#ifdef MASSFUNC_LOGNORMAL
+  mpbh_list(i) = 0.0   ! 2-3: placeholder mass, contributes nothing to any sum
+#endif
+enddo
+! BUG FIX: idpbh is allocated with N (one entry per particle, only 1..Nhres is
+! ever read or written), but this loop used to run to 2*Ncell, which is the
+! size of the PBH list lpbh - clearly copy-pasted from the loop just above.
+! 2*Ncell only depends on Npbh (i.e. on the total DM mass, fpbh and the mean
+! PBH mass), NOT on the particle count, so whenever the PBH sampling produces
+! more than N/2 candidate cells the write runs past the end of idpbh and
+! -fbounds-check aborts.  With an extended mass function at ~19 Msun this is
+! the normal case (2*Ncell = 182250 vs N = 65536).
+! Conversely, when 2*Ncell < N the tail idpbh(2*Ncell+1:N) was left
+! UNINITIALISED and then read below in "if (idpbh(i) .ne. j)"; it only
+! happened to behave because fresh pages read back as zero and 0 is not a
+! valid PBH index.
+do i=1,N
+  idpbh(i) = -1
+enddo
+write(0,*) 'Perturbing particles within', rpert
+  dx_pert = 0.0
 #ifdef VELOCITY
   dv_pert = 0.0
 #endif
@@ -368,33 +438,24 @@ program pbh_ic
     endif
     call dx_periodic(pos(1:3,i), lpbh(1:3,idpbh(i)), disp, bs)
     dummy = dist0(disp,(/0.,0.,0./),bs)
-    if (dummy .gt. d_nl) then
-      xdis = disp/dummy *psi_l(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)
-      vdis = disp/dummy *psi_dot_l(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)/sqrt(a)
-    else
-      xdis = disp/dummy *psi_nl(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)
-      vdis = disp/dummy *psi_dot_nl(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)/sqrt(a)
-    endif
-    
-    if (i .le. Ngas) then
-#if defined(DAMPING) || defined(NO_GAS_PERTURB)
-      xdis = xdis * gfac_gas/gfac
+! 2-4: with an extended mass function the mass factor must sit INSIDE the sum
+! over PBHs (each PBH carries its own mass); only the constant
+! 4*PI*gra*msun/kpc/kpc stays outside.
+#ifdef MASSFUNC_LOGNORMAL
+    xdis = mpbh_list(idpbh(i)) * disp/dummy/(dummy**2 + (esft*dismax)**2)
+    xdis = xdis * 4*PI*gra*msun/kpc/kpc !* fscale
+#else
+    xdis = disp/dummy/(dummy**2 + (esft*dismax)**2)
+    xdis = xdis * 4*PI*gra*mpbh*msun/kpc/kpc !* fscale
 #endif
-    endif    
-
+    !xdis = xdis * 4/(Om0*H0**2)*log(0.5*(1.0+sqrt(1.0+a/aeq)))/kpc
+    xdis = xdis * gfac/1.5/(Om0*H0**2)/kpc *h**3
     d_dummy = dist0(xdis,(/0.,0.,0./),bs)
-    fac = d_dummy/psi_l(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)
-    
-    if (i .gt. Ngas) then
-      facavg1 = facavg1+fac
-   	else  
-      facavg0 = facavg0+fac
-    endif
-    
-    dx_pert = dx_pert + d_dummy !*fac
-    pos(1:3,i) = pos(1:3,i) - xdis !*fac
-    dv_pert = dv_pert + dist0(vdis,(/0.,0.,0./),1e20)
-    vel(1:3,i) = vel(1:3,i) - vdis
+    fac = min(1.0, fshrink*dummy)
+    dx_pert = dx_pert + d_dummy*fac
+    pos(1:3,i) = pos(1:3,i) - xdis*fac
+    dv_pert = dv_pert + d_dummy * vfac *H0*kpc/h/1e5/sqrt(a) *fac
+    vel(1:3,i) = vel(1:3,i) - xdis *vfac *H0*kpc/h/1e5/sqrt(a) *fac
   enddo
 #else:
   nonlinear = 0
@@ -402,12 +463,6 @@ program pbh_ic
   
   do i=1,Nhres
     xdis = 0.0
-    vdis = 0.0
-!#ifdef NO_GAS_PERTURB    
-!    if (i .le. Ngas) then
-!      cycle
-!    endif
-!#endif
     !rnearest = bs
     !dnearest = (/10*bs,10*bs,10*bs/)
   if (Ngen .gt. nonlinear) then
@@ -419,8 +474,11 @@ program pbh_ic
       if (idpbh(i) .ne. j) then
         call dx_periodic(pos(1:3,i), lpbh(1:3,j), disp, bs)
         dummy = dist0(disp,(/0.,0.,0./),bs)
-        xdis = xdis + disp/dummy *psi_l(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)
-        vdis = vdis + disp/dummy *psi_dot_l(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)/sqrt(a)
+#ifdef MASSFUNC_LOGNORMAL
+        xdis = xdis + mpbh_list(j) * disp/dummy/(dummy**2 + (esft*dismax)**2)
+#else
+        xdis = xdis + disp/dummy/(dummy**2 + (esft*dismax)**2)
+#endif
         !if (dummy .lt. rnearest) then
         !  rnearest = dummy
         !  dnearest = disp
@@ -433,7 +491,7 @@ program pbh_ic
     !endif
     call kd_nnearest(pbhroot, pos(1:3,i), npert, nnindex, nndis, i_dummy)
     do j=1,npert
-      if (nndis(j) .lt. rpert) then
+      !if (nndis(j) .lt. rpert) then
       if (idpbh(i) .ne. nnindex(j)) then
         call dx_periodic(pos(1:3,i), lpbh(1:3,nnindex(j)), disp, bs)
         if (nnindex(j) .gt. Ngen) then
@@ -441,23 +499,32 @@ program pbh_ic
           stop
         endif
         dummy = dist0(disp,(/0.,0.,0./),bs)
-        xdis = xdis + disp/dummy *psi_l(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)  !dist0(pos(1:3,i), lpbh0(1:3,j))**3
-        vdis = vdis + disp/dummy *psi_dot_l(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)/sqrt(a)
+#ifdef MASSFUNC_LOGNORMAL
+        xdis = xdis + mpbh_list(nnindex(j)) * disp/dummy/(dummy**2 + (esft*dismax)**2)
+#else
+        xdis = xdis + disp/dummy/(dummy**2 + (esft*dismax)**2)  !dist0(pos(1:3,i), lpbh0(1:3,j))**3
+#endif
         !if (dummy .lt. rnearest) then
         !  rnearest = dummy
         !  dnearest = disp
         !endif
       endif
-      endif
     enddo
 #endif
-    !xdis = xdis * 4*PI*gra*mpbh*msun/kpc/kpc !* fscale
+! 2-4: with an extended mass function the mass factor must sit INSIDE the sum
+! over PBHs (each PBH carries its own mass); only the constant
+! 4*PI*gra*msun/kpc/kpc stays outside.
+#ifdef MASSFUNC_LOGNORMAL
+    xdis = xdis * 4*PI*gra*msun/kpc/kpc !* fscale
+#else
+    xdis = xdis * 4*PI*gra*mpbh*msun/kpc/kpc !* fscale
+#endif
     !xdis = xdis * 4/(Om0*H0**2)*log(0.5*(1.0+sqrt(1.0+a/aeq)))/kpc
-    !xdis = xdis * gfac/1.5/(Om0*H0**2)/kpc *h**3
+    xdis = xdis * gfac/1.5/(Om0*H0**2)/kpc *h**3
     
     if (i .le. Ngas) then
       mref = massarr(0)
-#if defined(DAMPING) || defined(NO_GAS_PERTURB)
+#ifdef DAMPING
       xdis = xdis * gfac_gas/gfac
 #endif
     elseif (i .le. Nhres) then
@@ -489,9 +556,9 @@ program pbh_ic
 #ifdef VELOCITY
     !dv_pert = dv_pert + d_dummy * H0*sqrt(Om0) * kpc/h/1e5/a *fac
     !vel(1:3,i) = vel(1:3,i) - xdis *H0*sqrt(Om0) * kpc/h/1e5/a *fac
-    dv_pert = dv_pert + dist0(vdis,(/0.,0.,0./),1e20)*fac
-    vel(1:3,i) = vel(1:3,i) - vdis*fac
-    ! The internal velocity in GIZMO/GADGET is actually u=v/sqrt(a) 
+    dv_pert = dv_pert + d_dummy * vfac *H0*kpc/h/1e5/sqrt(a) *fac
+    vel(1:3,i) = vel(1:3,i) - xdis *vfac *H0*kpc/h/1e5/sqrt(a) *fac
+    ! The internal velocity in GIZMO/GADGET is actually u=v*sqrt(a) 
     ! given the physical velocity v and scale factor a
 #endif
   endif !if (Ngen .gt. nonlinear)
@@ -518,13 +585,23 @@ program pbh_ic
       if (i .ne. j) then
         call dx_periodic(lpbh(1:3,i), lpbh(1:3,j), disp, bs)
         dummy = dist0(disp,(/0.,0.,0./),bs)
-        xdis = xdis + disp/dummy *psi_l(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)
-        vdis = vdis + disp/dummy *psi_dot_l(dummy**2 + (esft*dismax)**2, a, mpbh, fscale)/sqrt(a)
+#ifdef MASSFUNC_LOGNORMAL
+        xdis = xdis + mpbh_list(j) * disp/dummy/(dummy**2 + (esft*dismax)**2)
+#else
+        xdis = xdis + disp/dummy/(dummy**2 + (esft*dismax)**2)
+#endif
       endif
     enddo
-    !xdis = xdis * 4*PI*gra*mpbh*msun/kpc/kpc !* fscale
+! 2-4: with an extended mass function the mass factor must sit INSIDE the sum
+! over PBHs (each PBH carries its own mass); only the constant
+! 4*PI*gra*msun/kpc/kpc stays outside.
+#ifdef MASSFUNC_LOGNORMAL
+    xdis = xdis * 4*PI*gra*msun/kpc/kpc !* fscale
+#else
+    xdis = xdis * 4*PI*gra*mpbh*msun/kpc/kpc !* fscale
+#endif
     !xdis = xdis * 4/(Om0*H0**2)*log(0.5*(1.0+sqrt(1.0+a/aeq)))/kpc
-    !xdis = xdis * gfac/1.5/(Om0*H0**2)/kpc *h**3
+    xdis = xdis * gfac/1.5/(Om0*H0**2)/kpc *h**3
     d_dummy = dist0(xdis,(/0.,0.,0./),bs)
 #ifdef TRUNCATE
     !dummy = p1dotp2(dnearest, xdis)
@@ -540,7 +617,7 @@ program pbh_ic
 #ifdef VELOCITY
     !dv_pert = dv_pert + d_dummy * H0*sqrt(Om0) * kpc/h/1e5/a *fac
     !vel(1:3,i) = vel(1:3,i) - xdis *H0*sqrt(Om0) * kpc/h/1e5/a *fac
-    ldpbh(4:6,i) = - vdis*fac
+    ldpbh(4:6,i) = - xdis *vfac *H0*kpc/h/1e5/sqrt(a) *fac
     ! The internal velocity in GIZMO/GADGET is actually u=v*sqrt(a) 
     ! given the physical velocity v and scale factor a
 #endif
@@ -562,17 +639,28 @@ program pbh_ic
   endif ! if (Ngen .gt. 0)
 #endif ! #ifdef PBH
 
-#ifdef noPBH
-  if (Ngen .gt. 0) then
-    Ngen = 0
-    write(0,*) 'Remove generated PBH but keep perturbation'
-  endif
-#endif
-
   ! output data
 if (Ngen .gt. 0) then
-  massarr(1) = massarr(1)*(1.0-fpbh_)
+  massarr(1) = massarr(1)*(1.0-fpbh)
+#ifdef MASSFUNC_LOGNORMAL
+  ! 2-5: with an extended mass function every PBH has its own mass, so the
+  ! header slot must be 0 and the masses move into the variable-mass block.
+  ! Ordering: the variable-mass block follows particle-type order, and the
+  ! PBHs were inserted into pos1/vel1/id1 between the type 0/1 block and the
+  ! type >= 2 block, so their masses go at offset Nm_hres.
+  ! Units: mpbh_list is in physical Msun, the snapshot uses 1e10 Msun/h,
+  ! hence the same h/1e10 conversion that massarr(pbh_type) used to apply.
+  massarr(pbh_type) = 0.0
+  allocate(lmass1(1:Nm+Ngen))
+  if (Nm_hres .gt. 0) lmass1(1:Nm_hres) = lmass(1:Nm_hres)
+  lmass1(Nm_hres+1:Nm_hres+Ngen) = mpbh_list(1:Ngen) * real(h/1e10)
+  if (Nm .gt. Nm_hres) lmass1(Nm_hres+Ngen+1:Nm+Ngen) = lmass(Nm_hres+1:Nm)
+  Nm = Nm + Ngen
+  write(0,*) 'Variable-mass block: Nm=',Nm,' (',Nm_hres,' from types 0/1 +', &
+    & Ngen,' PBHs + ',Nm-Nm_hres-Ngen,' from types >=2), massarr(pbh_type)=0'
+#else
   massarr(pbh_type) = mpbh*h/1e10
+#endif
   nall(pbh_type) = Ngen
   npart(pbh_type) = Ngen
   allocate(pos1(1:3,1:N+Ngen))
@@ -604,7 +692,7 @@ else
   !write(0,*) 'Error: no PBH!'
   write(0,*) 'No PBH! Please modify PBH parameters or the random seed!'
 #endif
-endif ! if (Ngen .gt. 0)
+endif
 
 #ifdef FLIPID
   ! flip the IDs of gas and dark matter particles (may be needed for arepo)
@@ -623,39 +711,30 @@ endif ! if (Ngen .gt. 0)
   !write(0,*) 'check PBH mass:',massarr(pbh_type)*1e10/h
 #ifdef PBH
   outname = trim(outname) // '_pbh'
-#ifdef CENTER_PBH
-  outname = trim(outname) // '_pbhcen'
-#endif
 #ifndef PERTURB
   outname = trim(outname) // '_uptb'
-#endif
-#ifdef NO_GAS_PERTURB
-  outname = trim(outname) // '_ngasptb'
-#endif
-! #ifndef SELFS
-! outname = trim(outname) // '_nself'
-! #endif
-#ifndef NONLINEAR
-  outname = trim(outname) // '_nlinptb'
-#endif
-#ifdef noPBH
-  outname = trim(outname) // '_pertonly'
 #endif
 #else
   outname = trim(outname) // '_cdm'
 #endif
-
 #ifdef STREAMING
   outname = trim(outname) // '_streaming'
 #endif
-
   open(2, file=trim(outname) // '.dat', form='unformatted')
     write(2) npart, massarr ,a, redshift, flag_sfr,flag_feedback, nall, flag_cool, nfs, boxsize, Om0, Ol, h, unused
     write(2) pos1
     write(2) vel1
     write(2) id1
     if (Nm .gt. 0) then
+#ifdef MASSFUNC_LOGNORMAL
+      if (Ngen .gt. 0) then
+        write(2) lmass1     ! 2-5: type 0/1 masses + PBH masses + type >=2 masses
+      else
+        write(2) lmass
+      endif
+#else
       write(2) lmass
+#endif
     endif
     if (Ngas .gt. 0) then
       write(2) iegas
@@ -663,6 +742,24 @@ endif ! if (Ngen .gt. 0)
   close(2)
 
 contains
+
+#ifdef MASSFUNC_LOGNORMAL
+! 2-3: one standard normal deviate via the Box-Muller transform, built from
+! two uniforms of rng_obj%get_ran().  get_ran() returns [0,1), so u1 can come
+! out as exactly 0; redraw in that case to keep log(u1) finite.
+real function gauss_bm(rng_obj)
+    use random_object
+    implicit none
+    type(rng) :: rng_obj
+    real :: u1, u2
+    u1 = rng_obj%get_ran()
+    do while (u1 .le. 0.0)
+      u1 = rng_obj%get_ran()
+    end do
+    u2 = rng_obj%get_ran()
+    gauss_bm = sqrt(-2.0*log(u1)) * cos(2.0*PI*u2)
+end function gauss_bm
+#endif
 
 integer function poisson(mu, rng_obj)
     use random_object
@@ -723,77 +820,33 @@ end function poisson
     enddo
   end subroutine
 
-! Jiao Hao's model for point-source perturbations
-
-! linear comoving displacement [kpc/h]
-! dis2: comving distance squared [kpc/h]
-! a: scale factor
-! mpbh: point-source mass [Msun]
-! fscale: normalization factor
-  pure function psi_l(dis2, a, mpbh, fscale)
-    real*8, intent(in) :: a, mpbh 
-    real*4, intent(in) :: dis2, fscale
-    real*4 :: psi_l, t0
-    t0 = 1/H0
-    psi_l = 1.5 * gra*mpbh*msun * t0**2 / dis2 /(kpc/h)**2
-    psi_l = psi_l * (0.4*(aeq/a)**1.5 + 0.6*a/aeq - 1) /(kpc/h) * fscale
-  end function
-
-! linear physical velocity change [km/s]
-  pure function psi_dot_l(dis2, a, mpbh, fscale)
-    real*8, intent(in) :: a, mpbh 
-    real*4, intent(in) :: dis2, fscale
-    real*4 :: psi_dot_l, t0
-    t0 = 1/H0
-    psi_dot_l = 0.6 * gra*mpbh*msun *t0/aeq**1.5 / dis2 /(kpc/h)**2
-    psi_dot_l = psi_dot_l * ((aeq/a)**(0.5) -(aeq/a)**3) *a/1e5 * fscale!/ sqrt(a)
-  end function
-
-! non-linear scale: critical comoving distance [kpc/h] for the turnaround shell
-  pure function q_nl(mpbh, a, fscale)
-    real*8, intent(in) :: mpbh, a
-    real*4, intent(in) :: fscale
-    real*4 :: q_nl, t0
-    t0 = 1/H0
-    q_nl = (1.8 * gra*mpbh*msun *t0**2 *a/aeq)**(1.0/3.0) /(kpc/h) !* fscale
-  end function
-
-! comoving displacement [kpc/h] in the nonlinear (virialized) region
-  pure function psi_nl(dis2, a, mpbh, fscale)
-    real*8, intent(in) :: a, mpbh 
-    real*4, intent(in) :: dis2, fscale
-    real*4 :: psi_nl, t0, ata, q
-    q = sqrt(dis2)/(kpc/h)**2
-    t0 = 1/H0
-    ata = aeq * 5 * q**3/(9.0 * gra*mpbh*msun * t0**2)
-    psi_nl = q * (1.0 - ata/a/4.0) /(kpc/h) !* fscale
-  end function
-
-! physical velocity change [km/s] in the nonlinear (virialized) region
-  pure function psi_dot_nl(dis2, a, mpbh, fscale)
-    real*8, intent(in) :: a, mpbh 
-    real*4, intent(in) :: dis2, fscale
-    real*4 :: psi_dot_nl, psi, t, q
-    q = sqrt(dis2)/(kpc/h)**2
-    t = a**1.5/H0
-    psi = q - psi_nl(dis2, a, mpbh, fscale)
-    psi_dot_nl = 2.0/3.0 * psi / t
-  end function
-
   pure function Dgrow(s, fc, a_)
     real, intent(in) :: fc, a_
     real*8, intent(in) :: s
     real :: Dgrow
-!#ifdef SELFS ! No longer in use since we have used Jiao's formulism
-!    if (s .gt. 1) then
-!      !Dgrow = s*6.0*log(0.5+0.5**0.5)
-!      Dgrow = s*3.0/(4*PI)/1.3
-!    else
-!      Dgrow = 6*log(0.5+0.5*(1+s)**0.5) !(1.0+1.5*fc/a_*s)**a_ - 1.0
+#ifdef SELFS !try to comment out this part, reduce to the same initial condition as we did 2yrs ago
+    if (s .gt. 1) then
+      !Dgrow = s*6.0*log(0.5+0.5**0.5)
+      Dgrow = s*3.0/(4*PI)/1.3
+    else
+      Dgrow = 6*log(0.5+0.5*(1+s)**0.5) !(1.0+1.5*fc/a_*s)**a_ - 1.0
       !Dgrow = s*3.0/(4*PI)
-!    endif
-!#else
+    endif
+#else
     Dgrow = (1.0+1.5*fc/a_*s)**a_ - 1.0
+#endif
+  end function
+
+  pure function Dgrowv(a, aeq, fc, a_)
+    real, intent(in) :: fc, a_, aeq
+    real*8, intent(in) :: a
+    real :: Dgrowv, hubble
+!#ifdef SELFS
+    hubble = sqrt(Om0*(1.0/a**3+aeq/a**4)+Ol)
+    !Dgrowv = a**2*hubble*1.5/aeq/(1.5*a/aeq+1.0)
+    Dgrowv = a*hubble
+!#else
+!    Dgrowv = sqrt(Om0/a)
 !#endif
   end function
 

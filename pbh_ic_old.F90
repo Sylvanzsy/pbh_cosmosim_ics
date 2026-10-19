@@ -24,6 +24,8 @@ program pbh_ic
    !character*200, parameter :: icbase='ics_N128L1'
    !character*200, parameter :: icbase='ics_N256L10'
    character*200, parameter :: icbase='ics_N32L025_nu3'
+   !character*200, parameter :: icbase='ics_N32L025_nu3_dmo_z1e6'
+   !character*200, parameter :: icbase='ics_N32L5_dmo_z1e3'
 
    character*200 filename, outname
 
@@ -86,7 +88,7 @@ program pbh_ic
    !parameter(nnn=1, pbh_type=5, mpbh=1e10, fpbh=1e-4)
    !parameter(nnn=1, pbh_type=3, mpbh=1e6, fpbh=1e-3)
    !parameter(nnn=1, pbh_type=3, mpbh=1e6, fpbh=1e-2)
-   parameter(nnn=1, pbh_type=3, mpbh=33, fpbh=1e-3)
+   parameter(nnn=1, pbh_type=3, mpbh=10, fpbh=1e-4)
 !parameter: indicate that these are constants and cannot be changed during the execution of the program.
    logical :: zoomin
 ! boolean type variable, as a switch for zoom-in mode
