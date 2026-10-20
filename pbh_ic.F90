@@ -85,6 +85,9 @@ program pbh_ic
    
    real*8 :: mpbh, sigma_rms, z_rec, fstream!, a_target
    real*8 :: mpbh_mean   ! <M>; equals mpbh in the monochromatic case
+   ! Realised (not target) PBH mass budget used to deplete massarr(1); see the
+   ! "mass-conservation fix" block below. All real*8, no real*4 intermediates.
+   real*8 :: m_dm_msun, M_tot_msun, f_real, mass_removed_msun
 #ifdef MASSFUNC_LOGNORMAL
    ! 2-2: log-normal mass function parameters.
    !   Mc_pbh   median mass [Msun]
@@ -111,8 +114,45 @@ program pbh_ic
    !parameter(delta=18.0*PI**2, fscale=0.16260587661983628, fscalev=1.0)
    !parameter(delta=18.0*PI**2, fscale=1, fscalev=0.16260587661983628)!0.21138763960578716)
    
+#ifdef TEST_MASSFUNC
+! Mass-sampler self-test: draws Ntest masses with the exact same ran3/Box-Muller
+! routine and (Mc_pbh, sigma_ln) used by the real PBH generation loop below,
+! and reports the realised statistics against the analytic targets. Runs
+! standalone (own rng_obj%init) before any IC file is touched, so it works
+! without a large Ngen and without needing an actual snapshot on disk.
+#ifndef MASSFUNC_LOGNORMAL
+   write(0,*) 'TEST_MASSFUNC requires MASSFUNC_LOGNORMAL to also be defined', &
+     & ' (it tests that sampler''s parameters, Mc_pbh/sigma_ln).'
+   stop 1
+#else
+   block
+     integer*4, parameter :: Ntest = 1000000
+     real*8 :: lnm, s_lnm, s_lnm2, s_m
+     integer*4 :: itest
+     call rng_obj%init(rand_seed)
+     s_lnm  = 0.0d0
+     s_lnm2 = 0.0d0
+     s_m    = 0.0d0
+     do itest=1,Ntest
+       lnm = log(Mc_pbh) + sigma_ln*dble(gauss_bm(rng_obj))
+       s_lnm  = s_lnm  + lnm
+       s_lnm2 = s_lnm2 + lnm**2
+       s_m    = s_m    + exp(lnm)
+     enddo
+     write(0,*) 'TEST_MASSFUNC: N=',Ntest,' Mc_pbh=',Mc_pbh,' sigma_ln=',sigma_ln
+     write(0,*) '  mean ln M =', s_lnm/dble(Ntest), &
+       & '  (target ln Mc_pbh =', log(Mc_pbh), ')'
+     write(0,*) '  std  ln M =', sqrt(s_lnm2/dble(Ntest) - (s_lnm/dble(Ntest))**2), &
+       & '  (target sigma_ln  =', sigma_ln, ')'
+     write(0,*) '  mean     M =', s_m/dble(Ntest), &
+       & '  (target Mc_pbh*exp(sigma_ln**2/2) =', Mc_pbh*exp(0.5d0*sigma_ln**2), ')'
+   end block
+   stop
+#endif
+#endif
+
    npert=1
-   
+
    allocate(nnindex(max(nnn,npert)))
    allocate(nndis(max(nnn,npert)))
 
@@ -570,10 +610,36 @@ write(0,*) 'Perturbing particles within', rpert
       endif
     enddo
   enddo
-  write(0,*) 'Average displacement by PBHs:',dx_pert/float(Nhres)
-  write(0,*) 'Average truncation factor:',facavg1/Ndm,facavg0/Ngas,(facavg0+facavg1)/Nhres
+! NaN guard: each of these averages over a particle subset (DM, gas, or
+! DM+gas) that can be empty (Ngas=0 is the common DM-only case), in which case
+! the division is 0/0 = NaN. Skip the division and say so instead; no physics
+! changes here, diagnostics only.
+  if (Nhres .gt. 0) then
+    write(0,*) 'Average displacement by PBHs:',dx_pert/float(Nhres)
+  else
+    write(0,*) 'Average displacement by PBHs: n/a (Nhres=0)'
+  endif
+  if (Ndm .gt. 0) then
+    write(0,*) 'Average truncation factor (DM)     :',facavg1/Ndm
+  else
+    write(0,*) 'Average truncation factor (DM)     : n/a (Ndm=0)'
+  endif
+  if (Ngas .gt. 0) then
+    write(0,*) 'Average truncation factor (gas)    :',facavg0/Ngas
+  else
+    write(0,*) 'Average truncation factor (gas)    : n/a (Ngas=0)'
+  endif
+  if (Nhres .gt. 0) then
+    write(0,*) 'Average truncation factor (DM+gas) :',(facavg0+facavg1)/Nhres
+  else
+    write(0,*) 'Average truncation factor (DM+gas) : n/a (Nhres=0)'
+  endif
 #ifdef VELOCITY
-  write(0,*) 'Average velocity induced by PBHs:',dv_pert/float(Nhres)
+  if (Nhres .gt. 0) then
+    write(0,*) 'Average velocity induced by PBHs:',dv_pert/float(Nhres)
+  else
+    write(0,*) 'Average velocity induced by PBHs: n/a (Nhres=0)'
+  endif
 #endif
 
 #ifdef PERTURB_PBH
@@ -641,7 +707,49 @@ write(0,*) 'Perturbing particles within', rpert
 
   ! output data
 if (Ngen .gt. 0) then
-  massarr(1) = massarr(1)*(1.0-fpbh)
+! --- mass-conservation fix ----------------------------------------------
+! Previously: massarr(1) = massarr(1)*(1.0-fpbh). That used the TARGET input
+! fraction fpbh instead of the REALISED PBH mass budget - Ngen is a Poisson
+! draw around Npbh, and under MASSFUNC_LOGNORMAL each PBH's mass is itself a
+! random draw around mpbh_mean, so sum(M_j) != fpbh*Ndm*m_dm in general. It
+! also mixed real*4 fpbh into real*8 massarr(1) arithmetic ((1.0-fpbh) was
+! evaluated at real*4 precision before being promoted).
+!
+! f_real mirrors the DM-mass convention used in the Npbh normalisation above:
+! m_dm_msun gets the (Om0-Ob0)/Om0 factor only for a DM-only IC (Ngas=0),
+! where a type-1 particle represents the combined baryon+DM budget and only
+! the (Om0-Ob0)/Om0 slice of it is "DM" for the purpose of the fpbh target.
+! f_real is therefore comparable to the input fpbh (diagnostic only).
+!
+! The mass actually DEBITED from massarr(1) must not use that factor, though:
+! there is only one mass pool per type-1 particle (GIZMO cannot track a
+! "DM-only" sub-mass within a combined particle), and what has to balance is
+! the total mass handed to the PBHs, sum(M_j) = M_tot_msun, against the total
+! mass removed from type-1, Ndm*(massarr_old-massarr_new)*1e10/h. Dividing
+! M_tot_msun by (Om0-Ob0)/Om0 before subtracting it (i.e. applying f_real
+! directly to massarr(1)) would remove MORE than M_tot_msun whenever Ngas=0
+! (by a factor 1/((Om0-Ob0)/Om0) ~ 1.19 for Planck-like parameters) and silently
+! break total mass conservation - caught by tools/check_snapshot.py's
+! DM+PBH-vs-input-DM check. So the actual subtraction uses M_tot_msun directly.
+  if (Ngas .gt. 0) then
+    m_dm_msun = massarr(1)*1.0d10/h
+  else
+    m_dm_msun = massarr(1)*1.0d10/h * (dble(Om0)-dble(Ob0))/dble(Om0)
+  endif
+#ifdef MASSFUNC_LOGNORMAL
+  M_tot_msun = sum(real(mpbh_list(1:Ngen),8))
+#else
+  M_tot_msun = dble(Ngen)*mpbh
+#endif
+  f_real = M_tot_msun / (dble(Ndm)*m_dm_msun)
+  mass_removed_msun = M_tot_msun
+  massarr(1) = massarr(1) - mass_removed_msun*h/(dble(Ndm)*1.0d10)
+  write(0,*) 'PBH mass budget: f_pbh(input)=',fpbh,' f_real(realised, vs true DM mass)=',f_real
+  write(0,*) '  sum M_j (PBHs)   [Msun] =', M_tot_msun
+  write(0,*) '  DM mass removed  [Msun] =', mass_removed_msun
+  write(0,*) '  relative mismatch (removed-added)/added =', &
+    & (mass_removed_msun-M_tot_msun)/M_tot_msun
+! -------------------------------------------------------------------------
 #ifdef MASSFUNC_LOGNORMAL
   ! 2-5: with an extended mass function every PBH has its own mass, so the
   ! header slot must be 0 and the masses move into the variable-mass block.
@@ -678,7 +786,7 @@ if (Ngen .gt. 0) then
     id1(Nhres+i) = N+i-1
   enddo
   id1(Nhres+Ngen+1:N+Ngen) = id(Nhres+1:N)
-else 
+else
   allocate(pos1(1:3,1:N))
   pos1=pos
   deallocate(pos)
@@ -693,6 +801,39 @@ else
   write(0,*) 'No PBH! Please modify PBH parameters or the random seed!'
 #endif
 endif
+
+#ifdef PBH
+! --- PBH catalogue -------------------------------------------------------
+! Written unconditionally whenever PBH is defined (tiny file). Records
+! lpbh/mpbh_list AFTER PERTURB_PBH (if enabled) and the id1 value actually
+! assigned above - i.e. exactly what pos1/vel1/id1 carry into the snapshot
+! for the type-pbh_type particles, not the pre-perturbation sample.
+! This is independent of OUTPBH, which (if enabled) instead dumps the
+! UNPERTURBED lpbh (no ID, no mass) to <icbase>_pbhlist.txt right after PBH
+! generation, before PERTURB_PBH; the two are not redundant, but this file
+! is the complete, canonical record of what was written to disk.
+  open(4, file=trim(path)//trim(icbase)//'_pbh_list.txt', status='unknown')
+  write(4,'(A)') '# j ID x y z[kpc/h] vx vy vz[u=v*sqrt(a)] M[Msun]'
+  if (Ngen .gt. 0) then
+    do i=1,Ngen
+#ifdef MASSFUNC_LOGNORMAL
+      write(4,'(I10,1X,I12,1X,7ES16.8)') i, id1(Nhres+i), real(lpbh(1:6,i),8), &
+        & real(mpbh_list(i),8)
+#else
+      write(4,'(I10,1X,I12,1X,7ES16.8)') i, id1(Nhres+i), real(lpbh(1:6,i),8), mpbh
+#endif
+    enddo
+#ifdef MASSFUNC_LOGNORMAL
+    write(4,'(A,ES16.8)') '# total M [Msun] = ', sum(real(mpbh_list(1:Ngen),8))
+#else
+    write(4,'(A,ES16.8)') '# total M [Msun] = ', dble(Ngen)*mpbh
+#endif
+  else
+    write(4,'(A,ES16.8)') '# total M [Msun] = ', 0.0d0
+  endif
+  close(4)
+! -------------------------------------------------------------------------
+#endif
 
 #ifdef FLIPID
   ! flip the IDs of gas and dark matter particles (may be needed for arepo)

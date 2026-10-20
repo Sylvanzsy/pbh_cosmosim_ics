@@ -6,18 +6,23 @@ OBJS = random_object.o kdtree.o pbh_ic.o
 
 OPTF = -DTEST
 
+# Pass extra warnings on the command line without changing the default
+# build, e.g.:
+#   make clean && make WARNFLAGS=-Wall
+WARNFLAGS =
+
 # General rules
 #.SUFFIXES:
 .SUFFIXES: .exe .o .F90 .f90 .mod .f .c
 
 .F90.o:
-	$(f90invoke) -c $(OPTF) $< -fbounds-check -o $*.o $(F90) 
+	$(f90invoke) -c $(OPTF) $< -fbounds-check $(WARNFLAGS) -o $*.o $(F90)
 
 .f90.o:
-	$(f90invoke) -c $(OPTF) $< -fbounds-check -o $*.o $(F90) 
+	$(f90invoke) -c $(OPTF) $< -fbounds-check $(WARNFLAGS) -o $*.o $(F90)
 
 .f.o:
-	$(f90invoke) -c $(OPTF) $< -fbounds-check -o $*.o $(F90)
+	$(f90invoke) -c $(OPTF) $< -fbounds-check $(WARNFLAGS) -o $*.o $(F90)
 
 .c.o:
 	$(CC) -c $< -fbounds-check -o $*.o
