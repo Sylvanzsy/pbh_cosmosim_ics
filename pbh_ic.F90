@@ -1,7 +1,17 @@
 ! Add PBHs to a Gadget format 0 IC file
 #define DEBUG
 !#define OUTPBH
-#define PERTURB
+! PERTURB disabled (2026-10-23): the minimum-image direct sum used for the
+! background DM/gas perturbation has a known periodic-image artifact - at
+! |Delta x|=L/2 the nearest PBH image switches and the displacement field
+! flips sign discontinuously, producing a thin density sheet at x_PBH+/-L/2
+! (and y/z likewise). Confirmed with tools/diag_sheets.py (16-18 sigma
+! signal exactly at the predicted plane, not at a sampling-cell boundary -
+! see that script's docstring). The real fix is a periodic PM (+P3M
+! near-field correction) kernel, not yet implemented. Since these ICs start
+! at z=3400, PBHs are inserted without perturbing the background for now;
+! revisit PERTURB once the PM kernel exists.
+!#define PERTURB
 !#define STREAMING ! not relevant for this
 !#define FLIPID
 #define PBH
