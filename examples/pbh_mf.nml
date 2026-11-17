@@ -1,0 +1,10 @@
+! Example runtime parameters for the tabulated mass-function mode (MASSFUNC_TABLE).
+! Heavy-seed setup: 8 cMpc/h box, 512^3 (DM particle mass ~4.9e5 Msun).
+&pbh_mf
+  mf_file    = 'examples/mass_functions/mf_magaraggia2026_thiswork.txt'
+  mf_type    = 'dfdlnM'
+  mf_sample  = 'continuous'
+  Mmin       = 1.5e6          ! lower cutoff [Msun], about 3 x the DM particle mass
+  Mmax       = 1.0e8          ! upper cutoff [Msun]
+  fpbh_total = -1.0           ! <0: use the table's own normalisation
+/
