@@ -11,7 +11,11 @@ Usage:
     import_mf_xy.py IN.txt OUT.txt --label "..." [--source "..."]
     import_mf_xy.py --summary TABLE.txt        # print integrals of a table
 
-Nothing is smoothed, resampled or renormalised: the values are written as given.
+By default the values are written as given. With --figure-curve the script
+instead reproduces the curve drawn in Fig. 1 of Magaraggia et al. 2026: a
+log-log smoothing spline through ALL points of the file
+(scipy UnivariateSpline(log10 M, log10 psi, s=0.08), as in their notebook),
+evaluated on 141 points from 1e-6 to 1e8 Msun (0.1 dex). Nothing is renormalised.
 """
 import argparse, ast
 import numpy as np
@@ -67,6 +71,8 @@ if __name__ == "__main__":
     ap.add_argument("--label", default="")
     ap.add_argument("--source", default="")
     ap.add_argument("--summary")
+    ap.add_argument("--figure-curve", action="store_true")
+    ap.add_argument("--smooth", type=float, default=0.08)
     a = ap.parse_args()
     if a.summary:
         d = np.loadtxt(a.summary, comments="#")
@@ -75,9 +81,18 @@ if __name__ == "__main__":
     M, psi = read_xy(a.inp)
     keep = (M > 0) & (psi > 0)
     M, psi = M[keep], psi[keep]
+    how = "Values are copied unchanged from the source file (no smoothing, no renormalisation)."
+    if a.figure_curve:
+        from scipy.interpolate import UnivariateSpline
+        spl = UnivariateSpline(np.log10(M), np.log10(psi), s=a.smooth)
+        M = np.logspace(-6, 8, 141)
+        psi = 10.0 ** spl(np.log10(M))
+        how = (f"Values are the curve drawn in Fig. 1 of Magaraggia et al. 2026: log-log smoothing spline "
+               f"(s={a.smooth:g}) through all source points, evaluated from 1e-6 to 1e8 Msun in 0.1 dex steps. "
+               "Not renormalised.")
     hdr = [a.label, a.source,
            "Convention: second column is psi(M) = d f_PBH / d ln M (mass-weighted), M in Msun.",
-           "Values are copied unchanged from the source file (no smoothing, no renormalisation).",
+           how,
            "For pbh_ic: MASSFUNC_TABLE with mf_type = 'dfdlnM'.",
            "M [Msun]    df_PBH/dlnM"]
     np.savetxt(a.out, np.c_[M, psi], fmt="%.10e", header="\n".join(h for h in hdr if h))
